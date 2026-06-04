@@ -19,7 +19,7 @@ TIMEZONE = pytz.timezone("Europe/Moscow")
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# ========== БАЗА ДАННЫХ ==========
+# ========== БАЗА==========
 conn = sqlite3.connect('giveaways.db', check_same_thread=False)
 c = conn.cursor()
 
