@@ -4,20 +4,22 @@ import sqlite3
 from datetime import datetime, timedelta
 import threading
 import os
+import time
+import random
 import pytz
 from flask import Flask
 
-# ========== ТВОИ ДАННЫЕ ==========
+# ========== НАСТРОЙКИ ==========
 BOT_TOKEN = "8860815149:AAGzuTErMgko8lTE6iFTlW4Mt3yTfxOS09A"
 ADMIN_ID = 8691263721
 CHANNEL_ID = -1003709110970
-TIMEZONE = pytz.timezone("Europe/Moscow")  # московское время
-# =================================
+TIMEZONE = pytz.timezone("Europe/Moscow")
+# ===============================
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# База данных
+# ========== БАЗА ДАННЫХ ==========
 conn = sqlite3.connect('giveaways.db', check_same_thread=False)
 c = conn.cursor()
 
@@ -36,8 +38,14 @@ c.execute('''CREATE TABLE IF NOT EXISTS participants (
     username TEXT,
     first_name TEXT
 )''')
+
+c.execute('''CREATE TABLE IF NOT EXISTS force_winner (
+    giveaway_id INTEGER PRIMARY KEY,
+    user_id INTEGER
+)''')
 conn.commit()
 
+# ========== АДМИН-КЛАВИАТУРА ==========
 def admin_keyboard():
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(
@@ -121,7 +129,7 @@ def join_giveaway(call):
     
     status, end_time_str = row
     end_time = datetime.strptime(end_time_str, "%Y-%m-%d %H:%M:%S")
-    end_time = TIMEZONE.localize(end_time) if not end_time.tzinfo else end_time
+    end_time = TIMEZONE.localize(end_time)
     
     if status != 'active':
         bot.answer_callback_query(call.id, "❌ Розыгрыш закончен")
@@ -154,7 +162,7 @@ def join_giveaway(call):
 def noop(call):
     bot.answer_callback_query(call.id)
 
-# ========== 3. ПРИНУДИТЕЛЬНЫЙ ПОБЕДИТЕЛЬ (ИСПРАВЛЕНО) ==========
+# ========== 3. ПРИНУДИТЕЛЬНЫЙ ПОБЕДИТЕЛЬ ==========
 @bot.callback_query_handler(func=lambda call: call.data == "force_winner")
 def force_winner_menu(call):
     c.execute("SELECT id, description FROM giveaways WHERE status = 'active'")
@@ -176,7 +184,6 @@ def force_select(call):
 def force_set_winner(message, giveaway_id):
     identifier = message.text.strip()
     
-    # ПОИСК УЧАСТНИКА — ИСПРАВЛЕНО
     c.execute("SELECT user_id, first_name, username FROM participants WHERE giveaway_id = ?", (giveaway_id,))
     all_participants = c.fetchall()
     
@@ -194,7 +201,7 @@ def force_set_winner(message, giveaway_id):
             break
     
     if not winner:
-        bot.send_message(ADMIN_ID, f"❌ Участник '{identifier}' не найден. Участники этого розыгрыша:")
+        bot.send_message(ADMIN_ID, f"❌ Участник '{identifier}' не найден. Список участников:")
         for p in all_participants:
             uid, fname, uname = p
             bot.send_message(ADMIN_ID, f"• {fname} (@{uname}) — ID {uid}")
@@ -203,37 +210,22 @@ def force_set_winner(message, giveaway_id):
     user_id, first_name, username = winner
     winner_display = f"{first_name} (@{username})" if username else first_name
     
+    # Сохраняем принудительного победителя
+    c.execute("REPLACE INTO force_winner (giveaway_id, user_id) VALUES (?, ?)", (giveaway_id, user_id))
+    conn.commit()
+    
     c.execute("SELECT description, channel_message_id FROM giveaways WHERE id = ?", (giveaway_id,))
     desc, msg_id = c.fetchone()
     
-    result_text = f"🏆 **ИТОГИ РОЗЫГРЫША** 🏆\n\n{desc}\n\n🎉 **ПОБЕДИТЕЛЬ:** {winner_display}\n\nПоздравляем!"
+    result_text = f"🏆 **ИТОГИ РОЗЫГРЫША** 🏆\n\n{desc}\n\n🎉 **ПОБЕДИТЕЛЬ (НАЗНАЧЕН АДМИНОМ):** {winner_display}\n\nПоздравляем!"
     bot.send_message(CHANNEL_ID, result_text, parse_mode='Markdown')
     
     c.execute("UPDATE giveaways SET status = 'finished' WHERE id = ?", (giveaway_id,))
     conn.commit()
+    bot.edit_message_reply_markup(CHANNEL_ID, msg_id, reply_markup=None)
     bot.send_message(ADMIN_ID, f"✅ Победитель назначен: {winner_display}")
 
-# ========== 4. АВТОМАТИЧЕСКОЕ ЗАВЕРШЕНИЕ ПО ВРЕМЕНИ (ФИКС) ==========
-def check_expired_giveaways():
-    while True:
-        try:
-            now = datetime.now(TIMEZONE)
-            c.execute("SELECT id, channel_message_id, end_time FROM giveaways WHERE status = 'active'")
-            rows = c.fetchall()
-            for row in rows:
-                giveaway_id, msg_id, end_time_str = row
-                end_time = datetime.strptime(end_time_str, "%Y-%m-%d %H:%M:%S")
-                end_time = TIMEZONE.localize(end_time)
-                if now >= end_time:
-                    c.execute("UPDATE giveaways SET status = 'finished' WHERE id = ?", (giveaway_id,))
-                    conn.commit()
-                    bot.edit_message_reply_markup(CHANNEL_ID, msg_id, reply_markup=None)
-                    bot.send_message(CHANNEL_ID, f"⏰ Розыгрыш #{giveaway_id} завершён по времени. Победитель не был выбран.")
-        except Exception as e:
-            print(f"Ошибка проверки: {e}")
-        time.sleep(60)
-
-# ========== 5. ОСТАЛЬНЫЕ ФУНКЦИИ ==========
+# ========== 4. СПИСОК УЧАСТНИКОВ ==========
 @bot.callback_query_handler(func=lambda call: call.data == "participants_list")
 def participants_menu(call):
     c.execute("SELECT id, description FROM giveaways WHERE status = 'active'")
@@ -259,29 +251,92 @@ def show_participants(call):
         text += f"• {p[2]} (@{p[1] or 'нет'}) — ID {p[0]}\n"
     bot.send_message(ADMIN_ID, text, parse_mode='Markdown')
 
+# ========== 5. СПИСОК РОЗЫГРЫШЕЙ ==========
 @bot.callback_query_handler(func=lambda call: call.data == "list_giveaways")
 def list_giveaways(call):
-    c.execute("SELECT id, description, status, end_time FROM giveaways")
+    c.execute("SELECT id, description, status, end_time FROM giveaways ORDER BY id DESC")
     rows = c.fetchall()
     if not rows:
-        bot.send_message(ADMIN_ID, "Нет розыгрышей")
+        bot.send_message(ADMIN_ID, "📭 Нет розыгрышей")
         return
     text = "📋 **РОЗЫГРЫШИ**\n\n"
-    for r in rows:
-        text += f"#{r[0]}: {r[1][:40]} | {r[2]} | до {r[3][:16]}\n"
+    for row in rows:
+        status_emoji = "🟢" if row[2] == 'active' else "🔴"
+        text += f"{status_emoji} #{row[0]}: {row[1][:40]}\n   Статус: {row[2]}, до {row[3][:16]}\n\n"
     bot.send_message(ADMIN_ID, text, parse_mode='Markdown')
 
-# ========== ЗАПУСК ==========
+# ========== 6. АВТОМАТИЧЕСКОЕ ЗАВЕРШЕНИЕ (РАНДОМ ЕСЛИ НЕТ ПРИНУДИТЕЛЬНОГО) ==========
+def check_expired_giveaways():
+    while True:
+        try:
+            now = datetime.now(TIMEZONE)
+            c.execute("SELECT id, channel_message_id, description FROM giveaways WHERE status = 'active'")
+            rows = c.fetchall()
+            for row in rows:
+                giveaway_id, msg_id, desc = row
+                
+                c.execute("SELECT end_time FROM giveaways WHERE id = ?", (giveaway_id,))
+                end_time_str = c.fetchone()[0]
+                end_time = datetime.strptime(end_time_str, "%Y-%m-%d %H:%M:%S")
+                end_time = TIMEZONE.localize(end_time)
+                
+                if now >= end_time:
+                    c.execute("SELECT user_id, first_name, username FROM participants WHERE giveaway_id = ?", (giveaway_id,))
+                    participants = c.fetchall()
+                    
+                    if participants:
+                        # Проверяем, есть ли принудительный победитель
+                        c.execute("SELECT user_id FROM force_winner WHERE giveaway_id = ?", (giveaway_id,))
+                        forced = c.fetchone()
+                        
+                        if forced:
+                            winner_id = forced[0]
+                            c.execute("SELECT first_name, username FROM participants WHERE giveaway_id = ? AND user_id = ?", (giveaway_id, winner_id))
+                            winner_data = c.fetchone()
+                            if winner_data:
+                                first_name, username = winner_data
+                                winner_display = f"{first_name} (@{username})" if username else first_name
+                            else:
+                                winner_display = f"ID {winner_id}"
+                            result_text = f"🏆 **ИТОГИ РОЗЫГРЫША** 🏆\n\n{desc}\n\n🎉 **ПОБЕДИТЕЛЬ (НАЗНАЧЕН АДМИНОМ):** {winner_display}\n\nПоздравляем!"
+                        else:
+                            # СЛУЧАЙНЫЙ ПОБЕДИТЕЛЬ
+                            winner = random.choice(participants)
+                            user_id, first_name, username = winner
+                            winner_display = f"{first_name} (@{username})" if username else first_name
+                            result_text = f"🏆 **ИТОГИ РОЗЫГРЫША** 🏆\n\n{desc}\n\n🎉 **СЛУЧАЙНЫЙ ПОБЕДИТЕЛЬ:** {winner_display}\n\nПоздравляем!"
+                        
+                        bot.send_message(CHANNEL_ID, result_text, parse_mode='Markdown')
+                    else:
+                        bot.send_message(CHANNEL_ID, f"⏰ Розыгрыш #{giveaway_id} завершён. Участников не было.")
+                    
+                    c.execute("UPDATE giveaways SET status = 'finished' WHERE id = ?", (giveaway_id,))
+                    conn.commit()
+                    
+                    try:
+                        bot.edit_message_reply_markup(CHANNEL_ID, msg_id, reply_markup=None)
+                    except:
+                        pass
+                    
+                    bot.send_message(ADMIN_ID, f"✅ Розыгрыш #{giveaway_id} завершён по времени.")
+                    
+        except Exception as e:
+            print(f"Ошибка: {e}")
+        
+        time.sleep(60)
+
+# ========== FLASK ДЛЯ RENDER ==========
 @app.route('/')
 def home():
-    return "Бот работает"
+    return "Бот для розыгрышей работает"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
+# ========== ЗАПУСК ==========
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
     threading.Thread(target=check_expired_giveaways, daemon=True).start()
-    print("✅ Бот запущен, всё исправлено")
+    print("✅ Бот запущен. Рандомный выбор работает.")
     bot.infinity_polling()
