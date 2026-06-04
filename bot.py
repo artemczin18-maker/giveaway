@@ -9,7 +9,7 @@ import random
 import pytz
 from flask import Flask
 
-BOT_TOKEN = "8860815149:AAGzuTErMgko8lTE6iFTlW4Mt3yTfxOS09A"
+BOT_TOKEN = "8860815149:AAHfl1Iwz6Ko3AP5R1qwGCaRIfBvNVMiKng"
 ADMIN_ID = 8691263721
 CHANNEL_ID = -1003709110970
 TIMEZONE = pytz.timezone("Europe/Moscow")
