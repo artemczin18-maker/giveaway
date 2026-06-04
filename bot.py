@@ -8,7 +8,7 @@ from flask import Flask
 import os
 
 # ===== НАСТРОЙКИ (ЗАМЕНИ НА СВОИ) =====
-BOT_TOKEN = "8989367067:AAGQbcPtjqpQnLEF30q7Mkn3ROGvHtibxl0"
+BOT_TOKEN = "8954970328:AAE5BWjZxEjG-rDvqsJ8Nf6oFGzecrSxio4"
 ADMIN_ID = 8691263721 # ТВОЙ ID (узнай у @userinfobot)
 # =======================================
 
